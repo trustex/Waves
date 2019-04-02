@@ -3,7 +3,7 @@ package com.wavesplatform.lang
 import cats.syntax.monoid._
 import com.wavesplatform.common.state.ByteStr
 import com.wavesplatform.common.state.diffs.ProduceError._
-import com.wavesplatform.common.utils.EitherExt2
+import com.wavesplatform.common.utils.{EitherExt2, Base64}
 import com.wavesplatform.lang.Common.{NoShrink, sampleTypes}
 import com.wavesplatform.lang.utils.DirectiveSet
 import com.wavesplatform.lang.v1.compiler.Terms.EVALUATED
@@ -11,7 +11,7 @@ import com.wavesplatform.lang.v1.compiler.{ContractCompiler, Terms}
 import com.wavesplatform.lang.v1.evaluator.ContractEvaluator.Invocation
 import com.wavesplatform.lang.v1.evaluator.ctx.impl.PureContext
 import com.wavesplatform.lang.v1.evaluator.ctx.impl.waves.WavesContext
-import com.wavesplatform.lang.v1.evaluator.{ContractEvaluator, EvaluatorV1, ScriptResult}
+import com.wavesplatform.lang.v1.evaluator.{ContractEvaluator, EvaluatorV1, ScriptResult, Log}
 import com.wavesplatform.lang.v1.parser.Parser
 import com.wavesplatform.lang.v1.testing.ScriptGen
 import com.wavesplatform.lang.v1.traits.domain.{DataItem, Recipient, Tx}
@@ -108,11 +108,11 @@ class ContractIntegrationTest extends PropSpec with PropertyChecks with ScriptGe
     )
   }
 
-  def parseCompileAndVerify(script: String, tx: Tx): Either[ExecutionError, EVALUATED] = {
+  def parseCompileAndVerify(script: String, tx: Tx): (Log, Either[ExecutionError, EVALUATED]) = {
     val parsed   = Parser.parseContract(script).get.value
     val compiled = ContractCompiler(ctx.compilerContext, parsed).explicitGet()
     val evalm    = ContractEvaluator.verify(compiled.dec, compiled.vf.get, tx)
-    EvaluatorV1.evalWithLogging(Right(ctx.evaluationContext), evalm)._2
+    EvaluatorV1.evalWithLogging(Right(ctx.evaluationContext), evalm)
   }
 
   property("Simple verify") {
@@ -130,7 +130,7 @@ class ContractIntegrationTest extends PropSpec with PropertyChecks with ScriptGe
       recipient = Recipient.Address(ByteStr.empty),
       attachment = ByteStr.empty
     )
-    parseCompileAndVerify(
+    val (log, result) = parseCompileAndVerify(
       """
         |let some = base58''
         |
@@ -149,6 +149,38 @@ class ContractIntegrationTest extends PropSpec with PropertyChecks with ScriptGe
         |
       """.stripMargin,
       dummyTx
-    ) shouldBe Testing.evaluated(false)
+    )
+    result shouldBe Testing.evaluated(false)
+  }
+
+  property("Log big binaries") {
+    val dummyTx = Tx.Transfer(
+      p = Tx.Proven(
+        h = Tx.Header(id = ByteStr.empty, fee = 0, timestamp = 0, version = 0),
+        sender = Recipient.Address(ByteStr.empty),
+        bodyBytes = ByteStr.empty,
+        senderPk = ByteStr.empty,
+        proofs = IndexedSeq.empty
+      ),
+      feeAssetId = None,
+      assetId = None,
+      amount = 0,
+      recipient = Recipient.Address(ByteStr.empty),
+      attachment = ByteStr.empty
+    )
+    val (log, result) = parseCompileAndVerify(
+      s"""
+        |let some = base64'${Base64.encode(new Array[Byte](2048))}'
+        |
+        |@Verifier(t)
+        |func verify() = {
+        |  t.senderPublicKey == some
+        |}
+        |
+      """.stripMargin,
+      dummyTx
+    )
+    log.toString.containsSlice("CONST_BYTESTR(base64:") should be(true)
+    result shouldBe Testing.evaluated(false)
   }
 }
